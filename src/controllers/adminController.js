@@ -460,19 +460,36 @@ async function handleStats(msg, adminUserIds) {
     const activeProducts = await Product.countDocuments({ active: true });
     const totalCards = await Card.countDocuments();
     const usedCards = await Card.countDocuments({ used: true });
+    const availableCards = await Card.countDocuments({ used: false });
     const totalOrders = await Order.countDocuments();
     const pendingOrders = await Order.countDocuments({ status: 'pending' });
     const expiredOrders = await Order.countDocuments({ status: 'expired' });
     const completedOrders = await Order.countDocuments({ status: 'delivered' });
     
+    // 获取各商品的库存详情
+    const products = await Product.find({ active: true });
+    let stockDetails = '';
+    
+    for (const product of products) {
+      const stockCount = await Card.countDocuments({ 
+        productId: product._id, 
+        used: false 
+      });
+      const stockStatus = stockCount > 0 ? '✅' : '❌';
+      stockDetails += `${stockStatus} ${product.name}: ${stockCount}张\n`;
+    }
+    
     const statsMessage = 
       '📊 *系统统计信息*\n\n' +
       `🛒 产品数量：${activeProducts}/${totalProducts}\n` +
-      `🔑 卡密数量：${usedCards}/${totalCards}\n` +
+      `🔑 卡密总量：${totalCards}张\n` +
+      `✅ 可用卡密：${availableCards}张\n` +
+      `❌ 已用卡密：${usedCards}张\n` +
       `📃 订单总量：${totalOrders}\n` +
       `⏳ 待处理订单：${pendingOrders}\n` +
       `⌛ 已过期订单：${expiredOrders}\n` +
-      `✅ 已完成订单：${completedOrders}`;
+      `✅ 已完成订单：${completedOrders}\n\n` +
+      (stockDetails ? `📦 *各商品库存详情*\n${stockDetails}` : '');
     
     await botInstance.sendMessage(chatId, statsMessage, { parse_mode: 'Markdown' });
   } catch (error) {

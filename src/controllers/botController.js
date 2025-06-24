@@ -161,14 +161,54 @@ async function handleProducts(msg) {
       return botInstance.sendMessage(chatId, '😢 目前没有可用商品。');
     }
     
-    const inlineKeyboard = products.map(product => {
-      return [{ text: `${product.name} - ¥${product.price}`, callback_data: `buy_${product._id}` }];
-    });
+    // 获取每个商品的库存数量
+    const productsWithStock = await Promise.all(
+      products.map(async (product) => {
+        const stockCount = await Card.countDocuments({ 
+          productId: product._id, 
+          used: false 
+        });
+        return { product, stockCount };
+      })
+    );
+    
+    let message = '🛒 *可用商品列表*\n\n';
+    const inlineKeyboard = [];
+    
+    for (const { product, stockCount } of productsWithStock) {
+      const stockText = stockCount > 0 ? `库存: ${stockCount}` : '❌ 缺货';
+      const priceText = `¥${product.price}`;
+      
+      // 添加商品信息到消息中
+      message += `📦 **${product.name}**\n`;
+      message += `💰 价格: ${priceText}\n`;
+      message += `📊 ${stockText}\n`;
+      if (product.description) {
+        message += `📝 ${product.description}\n`;
+      }
+      message += `\n`;
+      
+      // 只有有库存的商品才能购买
+      if (stockCount > 0) {
+        inlineKeyboard.push([{ 
+          text: `🛒 购买 ${product.name} - ${priceText}`, 
+          callback_data: `buy_${product._id}` 
+        }]);
+      } else {
+        inlineKeyboard.push([{ 
+          text: `❌ ${product.name} (缺货)`, 
+          callback_data: `sold_out_${product._id}` 
+        }]);
+      }
+    }
+    
+    message += '点击下方按钮进行购买：';
     
     await botInstance.sendMessage(
       chatId,
-      '🛒 可用商品列表：\n\n点击商品进行购买',
+      message,
       {
+        parse_mode: 'Markdown',
         reply_markup: {
           inline_keyboard: inlineKeyboard
         }
@@ -257,6 +297,32 @@ async function handleCallbackQuery(callbackQuery, adminUserIds) {
     if (action.startsWith('buy_')) {
       const productId = action.split('_')[1];
       await handleBuyProduct(chatId, userId, productId);
+      return;
+    }
+    
+    // 处理缺货商品点击
+    if (action.startsWith('sold_out_')) {
+      const productId = action.split('_')[2];
+      try {
+        const product = await Product.findById(productId);
+        const productName = product ? product.name : '该商品';
+        await botInstance.sendMessage(
+          chatId, 
+          `❌ 抱歉，${productName} 目前缺货。\n\n您可以：\n` +
+          `• 稍后再试\n` +
+          `• 选择其他商品\n` +
+          `• 联系管理员了解补货时间`,
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: '🔄 刷新商品列表', callback_data: 'view_products' }]
+              ]
+            }
+          }
+        );
+      } catch (error) {
+        await botInstance.sendMessage(chatId, '❌ 该商品目前缺货，请选择其他商品。');
+      }
       return;
     }
     
@@ -1072,10 +1138,20 @@ async function handleBuyProduct(chatId, userId, productId) {
       return botInstance.sendMessage(chatId, '❌ 该产品已下架，暂不可购买。');
     }
     
-    // 检查库存
+    // 检查库存 - 双重验证
     const stockCount = await Card.countDocuments({ productId, used: false });
     if (stockCount <= 0) {
-      return botInstance.sendMessage(chatId, `❌ 抱歉，${product.name} 已售罄，请选择其他商品。`);
+      return botInstance.sendMessage(
+        chatId, 
+        `❌ 抱歉，${product.name} 已售罄，请选择其他商品。`,
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '🔄 刷新商品列表', callback_data: 'view_products' }]
+            ]
+          }
+        }
+      );
     }
     
     console.log(`产品库存充足: ${stockCount}张卡密可用`);
@@ -1105,6 +1181,23 @@ async function handleBuyProduct(chatId, userId, productId) {
       
       if (!paymentInfo || !paymentInfo.sessionId || !paymentInfo.paymentUrl) {
         throw new Error('创建支付链接失败: ' + JSON.stringify(paymentInfo));
+      }
+      
+      // 创建订单前再次检查库存（双重保险）
+      const finalStockCheck = await Card.countDocuments({ productId, used: false });
+      if (finalStockCheck <= 0) {
+        console.log('支付会话创建后库存不足，取消订单创建');
+        return botInstance.sendMessage(
+          chatId, 
+          `❌ 抱歉，${product.name} 在您购买期间已售罄，请选择其他商品。`,
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: '🔄 刷新商品列表', callback_data: 'view_products' }]
+              ]
+            }
+          }
+        );
       }
       
       // 先创建一个临时订单
